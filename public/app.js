@@ -137,17 +137,20 @@ function renderSide() {
   const visited = store.get('visited', {});
   nav.replaceChildren(...projects().map((p) => {
     const unseen = p.key !== S.project && p.videos.some((v) => v.addedAt > (visited[p.key] || ''));
-    const el = h(`<button class="proj ${p.key === S.project ? 'on' : ''}">
+    const versions = new Set(p.videos.map((v) => v.title + v.version)).size;
+    const el = h(`<button class="proj ${p.key === S.project ? 'on' : ''}" ${p.key === S.project ? 'aria-current="true"' : ''}>
       ${p.latest.poster ? `<img src="${p.latest.poster}" alt="" loading="lazy">` : '<span class="ph"></span>'}
-      <span style="min-width:0">
-        <div class="proj-name">${esc(p.name)}${unseen ? '<span class="dot-new"></span>' : ''}</div>
-        <div class="proj-when">${fmt.rel(p.latest.createdAt)}</div>
+      <span class="proj-text">
+        <span class="proj-name">${esc(p.name)}${unseen ? '<span class="dot-new" title="חדש"></span>' : ''}</span>
+        <span class="proj-when">${fmt.rel(p.latest.createdAt)}</span>
       </span>
-      <span class="proj-count num">${new Set(p.videos.map((v) => v.title + v.version)).size}</span>
+      <span class="proj-count num" title="${versions} גרסאות">${versions}</span>
     </button>`);
     el.onclick = () => openProject(p.key);
     return el;
   }));
+  // Phone layout scrolls the project strip sideways — keep the current one in view.
+  nav.querySelector('.proj.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 function renderMain() {
@@ -174,8 +177,8 @@ function renderMain() {
       <h1 title="לחיצה כפולה לשינוי שם">${esc(p.name)}</h1>
       <div class="head-meta"><span class="num">${versions}</span> גרסאות · עודכן ${fmt.rel(p.latest.createdAt)}</div>
     </div>
-    <div class="tools"><button class="pill ${S.compare ? 'on' : ''}" id="cmp">${ICON.compare}השוואה</button></div>`;
-  $('#cmp', head).onclick = toggleCompare;
+    ${p.videos.length > 1 ? `<div class="tools"><button class="pill ${S.compare ? 'on' : ''}" id="cmp" aria-pressed="${S.compare}">${ICON.compare}השוואה</button></div>` : ''}`;
+  $('#cmp', head)?.addEventListener('click', toggleCompare);
   const h1 = $('h1', head);
   if (STATIC) h1.removeAttribute('title');
   else h1.ondblclick = () => editProjectName(h1, p);
@@ -184,9 +187,10 @@ function renderMain() {
   rail.replaceChildren(...groups.map((g) => {
     const sec = h(`<div class="ver">
       <div class="ver-head">
-        <div class="ver-label num"><small>v</small>${g.version}${multiTitle ? `<span class="t">${esc(g.title)}</span>` : ''}${g.latest ? '<span class="badge-new">אחרון</span>' : ''}</div>
+        <div class="ver-label num"><span class="ltr"><small>v</small>${g.version}</span>${g.latest ? '<span class="badge-new">אחרון</span>' : ''}</div>
         <div class="ver-when num">${fmt.short(g.when)} · ${fmt.time(g.when)}</div>
       </div>
+      ${multiTitle ? `<div class="ver-title">${esc(g.title)}</div>` : ''}
       <div class="cards"></div>
     </div>`);
     $('.cards', sec).append(...g.videos.map(card));
@@ -199,7 +203,7 @@ function renderMain() {
 function card(v) {
   const wide = v.width && v.height && v.width > v.height;
   const cls = [v.id === S.a && 'on', v.id === S.b && 'on-b', S.fresh.has(v.id) && 'fresh', wide && 'wide'].filter(Boolean).join(' ');
-  const el = h(`<button class="card ${cls}" data-id="${v.id}" title="${esc(fmt.date(v.createdAt) + ' ' + fmt.time(v.createdAt))}">
+  const el = h(`<button class="card ${cls}" data-id="${v.id}" title="${esc(`v${v.version} · ${label(v)} · ${fmt.date(v.createdAt)} ${fmt.time(v.createdAt)}`)}">
     <div class="thumb ${wide ? 'wide' : ''}">
       ${v.poster ? `<img src="${v.poster}" alt="" loading="lazy">` : ''}
       <video muted loop playsinline preload="none"></video>
@@ -248,22 +252,26 @@ function renderStage() {
   if (!v || S.compare) return;
   const siblings = S.videos.filter((x) => slug(x.project) === slug(v.project) && slug(x.title) === slug(v.title) && x.version === v.version);
   info.innerHTML = `
-    <div class="big-ver num"><small>v</small>${v.version}${isLatest(v) ? '<span class="badge-new">אחרון</span>' : ''}</div>
-    ${siblings.length > 1 ? `<div class="variants">${siblings.map((s) => `<button class="chip ${s.id === v.id ? 'on' : ''}" data-id="${s.id}">${esc(label(s))}</button>`).join('')}</div>` : ''}
-    <div class="when num">
-      <span class="date">${fmt.date(v.createdAt)}</span>
-      <span class="time">${fmt.time(v.createdAt)}</span>
-      <span class="rel">${fmt.rel(v.createdAt)}</span>
+    <div class="info-top">
+      <div class="big-ver num"><span class="ltr"><small>v</small>${v.version}</span>${isLatest(v) ? '<span class="badge-new">אחרון</span>' : ''}</div>
+      <div class="when num">
+        <span class="date">${fmt.date(v.createdAt)}</span>
+        <span class="time">${fmt.time(v.createdAt)}</span>
+        <span class="rel">${fmt.rel(v.createdAt)}</span>
+      </div>
     </div>
-    <div class="facts num">${[v.duration && fmt.dur(v.duration), v.width && `${v.width}×${v.height}`, fmt.size(v.size)].filter(Boolean).map((x) => `<span class="ltr">${x}</span>`).join('')}</div>
+    ${siblings.length > 1 ? `<div class="variants" role="group" aria-label="וריאנט">${siblings.map((s) => `<button class="chip ${s.id === v.id ? 'on' : ''}" data-id="${s.id}" aria-pressed="${s.id === v.id}">${esc(label(s))}</button>`).join('')}</div>` : ''}
+    <div class="facts num">${[v.duration && fmt.dur(v.duration), v.width && `${v.width}×${v.height}`, fmt.size(v.size)].filter(Boolean).map((x) => `<span class="ltr">${x}</span>`).join('<i></i>')}</div>
     <div class="note" contenteditable="plaintext-only" data-ph="הערה…" spellcheck="false">${esc(v.note)}</div>
+    <div class="send">
+      <button class="btn primary" data-act="send">${ICON.film}<span>${STATIC ? 'שליחה כסרטון' : 'העתקה כסרטון'}</span></button>
+      <a class="btn wa" href="${waLink(v)}" target="_blank" rel="noopener">${ICON.whatsapp}<span>לינק בוואטסאפ</span></a>
+    </div>
     <div class="acts">
-      <a class="icon wa" href="${waLink(v)}" target="_blank" rel="noopener" title="שליחה בוואטסאפ">${ICON.whatsapp}</a>
-      <button class="icon wa" data-act="send" title="${STATIC ? 'שליחה כסרטון' : 'העתקת הסרטון · הדבקה בוואטסאפ'}">${ICON.film}</button>
-      <button class="icon" data-act="copy" title="העתקת קישור">${ICON.link}</button>
-      <a class="icon" href="${v.src}" download="${esc(v.name)}" title="הורדה">${ICON.download}</a>
-      <button class="icon" data-act="reveal" title="פתיחת התיקייה">${ICON.folder}</button>
-      ${STATIC ? '' : `<button class="icon danger" data-act="delete" title="הסרה מהספרייה">${ICON.trash}</button>`}
+      <button class="icon" data-act="copy" title="העתקת קישור" aria-label="העתקת קישור">${ICON.link}</button>
+      <a class="icon" href="${v.src}" download="${esc(v.name)}" title="הורדה" aria-label="הורדה">${ICON.download}</a>
+      <button class="icon" data-act="reveal" title="פתיחת התיקייה" aria-label="פתיחת התיקייה">${ICON.folder}</button>
+      ${STATIC ? '' : `<button class="icon danger" data-act="delete" title="הסרה מהספרייה" aria-label="הסרה מהספרייה">${ICON.trash}</button>`}
     </div>`;
   info.querySelectorAll('.chip').forEach((c) => (c.onclick = () => select(c.dataset.id, true)));
   $('[data-act=send]', info).onclick = (e) => sendVideo(v, e.currentTarget);
@@ -294,6 +302,7 @@ function renderStage() {
 function markCards() {
   document.querySelectorAll('.card').forEach((c) => {
     c.classList.toggle('on', c.dataset.id === S.a);
+    c.toggleAttribute('aria-current', c.dataset.id === S.a);
     c.classList.toggle('on-b', S.compare && c.dataset.id === S.b);
   });
 }
@@ -338,6 +347,8 @@ function select(id, forceA = false) {
   syncHash();
   const vid = $(`.players .slot[data-id="${id}"] video`);
   if (vid && !S.compare) vid.play().catch(() => {});
+  // On phones the list sits under the player — bring the player back into view.
+  if (matchMedia('(max-width: 900px)').matches) $('.stage')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function toggleCompare() {
