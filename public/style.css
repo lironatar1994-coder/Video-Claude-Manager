@@ -175,6 +175,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
   display: grid; place-items: center; color: var(--dim); transition: all .15s;
 }
 .icon:hover { color: var(--text); border-color: #34343b; }
+.icon.wa:hover { color: #25d366; border-color: #25d366; }
 .icon.danger:hover { color: var(--danger); border-color: var(--danger); }
 .icon svg { width: 17px; height: 17px; }
 

@@ -51,6 +51,71 @@ const videos = db.videos.map((v) => {
   };
 });
 
+// ---- share pages: /videos/v/<id>/ with Open Graph tags so WhatsApp shows a preview ----
+const PUBLIC = 'https://lawebs.co.il/videos/';
+const OG = path.join(DATA, 'og');
+fs.mkdirSync(OG, { recursive: true });
+fs.mkdirSync(path.join(WWW, 'og'), { recursive: true });
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const when = (d) => new Date(d).toLocaleString('he-IL', {
+  timeZone: 'Asia/Jerusalem', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+}).replace(',', ' ·');
+
+for (const v of videos) {
+  let og = null;
+  if (v.poster) {
+    // 1200×630 card: the frame sharp in the middle over a blurred, darkened copy of itself.
+    const out = path.join(OG, `${v.id}.jpg`);
+    if (!fs.existsSync(out)) {
+      execFileSync('ffmpeg', ['-y', '-v', 'error', '-i', path.join(WWW, v.poster), '-filter_complex',
+        '[0]scale=1200:630:force_original_aspect_ratio=increase,crop=1200:630,boxblur=28:2,eq=brightness=-0.22[bg];' +
+        '[0]scale=1200:630:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2',
+        '-frames:v', '1', '-q:v', '4', out]);
+    }
+    fs.copyFileSync(out, path.join(WWW, 'og', `${v.id}.jpg`));
+    og = `og/${v.id}.jpg`;
+  }
+  const title = `${v.project} · v${v.version}${v.variant ? ' · ' + v.variant : ''}`;
+  const type = v.src.endsWith('.webm') ? 'video/webm' : 'video/mp4';
+  const page = `<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>${esc(title)}</title>
+<meta property="og:type" content="video.other">
+<meta property="og:title" content="${esc(title)}">
+<meta property="og:description" content="${esc(when(v.createdAt))}">
+<meta property="og:url" content="${PUBLIC}v/${v.id}/">
+${og ? `<meta property="og:image" content="${PUBLIC}${og}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">` : ''}
+<meta property="og:video" content="${PUBLIC}${v.src}">
+<meta property="og:video:type" content="${type}">
+${v.width ? `<meta property="og:video:width" content="${v.width}">\n<meta property="og:video:height" content="${v.height}">` : ''}
+<meta name="theme-color" content="#0b0b0d">
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0b0d; color: #f2f0eb; font: 15px/1.4 "Segoe UI", system-ui, sans-serif; }
+  main { height: 100svh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 16px; box-sizing: border-box; }
+  video { max-width: 100%; max-height: calc(100svh - 72px); border-radius: 14px; background: #000; box-shadow: 0 30px 80px -30px #000; }
+  p { margin: 0; color: #8d8b86; font-size: 13px; }
+  p b { color: #f2f0eb; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <video src="../../${v.src}" ${v.poster ? `poster="../../${v.poster}" ` : ''}controls playsinline preload="metadata"></video>
+  <p><b>${esc(v.project)}</b> · v${v.version}${v.variant ? ' · ' + esc(v.variant) : ''} · <span dir="ltr">${esc(when(v.createdAt))}</span></p>
+</main>
+</body>
+</html>
+`;
+  fs.mkdirSync(path.join(WWW, 'v', v.id), { recursive: true });
+  fs.writeFileSync(path.join(WWW, 'v', v.id, 'index.html'), page);
+}
+
 fs.writeFileSync(path.join(WWW, 'data.json'), JSON.stringify({ rev: db.rev, videos }));
 fs.writeFileSync(path.join(DIST, 'media.txt'), media.join('\n') + '\n');
 fs.writeFileSync(path.join(DIST, 'rev.txt'), String(db.rev));
