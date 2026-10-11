@@ -2,8 +2,8 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { ROOT, DATA, load, register, remove, update, renameProject, scanDir } from './lib.mjs';
+import { spawn, execFile } from 'node:child_process';
+import { ROOT, DATA, load, register, remove, update, renameProject, scanDir, slug } from './lib.mjs';
 
 const PORT = Number(process.env.PORT) || 5757;
 const PUBLIC = path.join(ROOT, 'public');
@@ -91,6 +91,26 @@ const server = http.createServer(async (req, res) => {
         const target = fs.existsSync(v.source) ? v.source : path.join(DATA, v.file);
         spawn('explorer.exe', [`/select,${target}`], { detached: true, stdio: 'ignore' }).unref();
         return json(res, 200, { ok: true });
+      }
+      if (seg[3] === 'clipboard' && req.method === 'POST') {
+        // Put the video file itself on the Windows clipboard, so Ctrl+V in WhatsApp
+        // sends it as a video. A readable file name is linked in data/share/<id>/.
+        const v = load().videos.find((x) => x.id === id);
+        if (!v) return json(res, 404, { error: 'not found' });
+        const ext = path.extname(v.file);
+        const web = path.join(DATA, 'web', v.id + ext);
+        const src = fs.existsSync(web) ? web : path.join(DATA, v.file);
+        const dir = path.join(DATA, 'share', v.id);
+        const dest = path.join(dir, `${slug(v.project)}-v${v.version}${v.variant ? '-' + slug(v.variant) : ''}${ext}`);
+        if (!fs.existsSync(dest)) {
+          fs.mkdirSync(dir, { recursive: true });
+          try { fs.linkSync(src, dest); } catch { fs.copyFileSync(src, dest); }
+        }
+        await new Promise((resolve, reject) => execFile('powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -LiteralPath $env:CLIP_FILE'],
+          { env: { ...process.env, CLIP_FILE: dest }, windowsHide: true },
+          (err) => (err ? reject(err) : resolve())));
+        return json(res, 200, { ok: true, file: path.basename(dest) });
       }
       if (req.method === 'PATCH') {
         const v = update(id, await readBody(req));

@@ -7,6 +7,7 @@ const ICON = {
   folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>',
+  film: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="13" height="14" rx="2.5"/><path d="m16 10 5-3v10l-5-3"/></svg>',
   link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>',
   whatsapp: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm0 18.2a8.2 8.2 0 0 1-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.3-.4.2-.4.7-1.4.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 0 0-.7.3 3 3 0 0 0-.9 2.2 5.2 5.2 0 0 0 1.1 2.8 11.9 11.9 0 0 0 4.6 4c1.7.7 2.4.8 3.2.7.5-.1 1.5-.6 1.8-1.2.2-.6.2-1.1.1-1.2l-.4-.2z"/></svg>',
   compare: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="16" rx="2"/><rect x="14" y="4" width="7" height="16" rx="2"/></svg>',
@@ -79,6 +80,42 @@ function versionGroups(p) {
 const PUBLIC = 'https://lawebs.co.il/videos/';
 const shareUrl = (v) => `${PUBLIC}v/${v.id}/`;
 const waLink = (v) => 'https://wa.me/?text=' + encodeURIComponent(`${v.project} · v${v.version}${v.variant ? ' · ' + v.variant : ''}\n${shareUrl(v)}`);
+
+const fileName = (v) => `${slug(v.project)}-v${v.version}${v.variant ? '-' + slug(v.variant) : ''}${(v.src.match(/\.\w+$/) || v.name.match(/\.\w+$/) || ['.mp4'])[0]}`;
+
+// Send the video itself (not a link) so WhatsApp shows it as a playable video.
+const fileCache = new Map();
+async function sendVideo(v, btn) {
+  if (!STATIC) {
+    // Local app on Windows: the file goes on the clipboard, Ctrl+V in WhatsApp sends it.
+    try { await api(`api/videos/${v.id}/clipboard`, 'POST'); toast('הסרטון הועתק · Ctrl+V בצ׳אט בוואטסאפ'); }
+    catch { toast('ההעתקה נכשלה'); }
+    return;
+  }
+  const canFiles = navigator.canShare?.({ files: [new File([''], 'x.mp4', { type: 'video/mp4' })] });
+  if (!canFiles) {
+    const a = Object.assign(document.createElement('a'), { href: v.src, download: fileName(v) });
+    a.click();
+    toast('הסרטון ירד · גרירה לצ׳אט בוואטסאפ');
+    return;
+  }
+  // Phones: native share sheet with the file → WhatsApp.
+  const ready = fileCache.has(v.id);
+  if (!ready) {
+    btn.classList.add('busy');
+    try {
+      const blob = await (await fetch(v.src)).blob();
+      fileCache.set(v.id, new File([blob], fileName(v), { type: blob.type || 'video/mp4' }));
+    } catch { btn.classList.remove('busy'); return toast('ההורדה נכשלה'); }
+    btn.classList.remove('busy');
+  }
+  try {
+    await navigator.share({ files: [fileCache.get(v.id)] });
+  } catch (e) {
+    // Downloading can outlast the click's permission to share; the second tap is instant.
+    if (e.name === 'NotAllowedError') toast('הסרטון מוכן · לחיצה נוספת לשליחה');
+  }
+}
 
 const byId = (id) => S.videos.find((v) => v.id === id);
 const isLatest = (v) => !S.videos.some((x) => slug(x.project) === slug(v.project) && slug(x.title) === slug(v.title) && x.version > v.version);
@@ -222,12 +259,14 @@ function renderStage() {
     <div class="note" contenteditable="plaintext-only" data-ph="הערה…" spellcheck="false">${esc(v.note)}</div>
     <div class="acts">
       <a class="icon wa" href="${waLink(v)}" target="_blank" rel="noopener" title="שליחה בוואטסאפ">${ICON.whatsapp}</a>
+      <button class="icon wa" data-act="send" title="${STATIC ? 'שליחה כסרטון' : 'העתקת הסרטון · הדבקה בוואטסאפ'}">${ICON.film}</button>
       <button class="icon" data-act="copy" title="העתקת קישור">${ICON.link}</button>
       <a class="icon" href="${v.src}" download="${esc(v.name)}" title="הורדה">${ICON.download}</a>
       <button class="icon" data-act="reveal" title="פתיחת התיקייה">${ICON.folder}</button>
       ${STATIC ? '' : `<button class="icon danger" data-act="delete" title="הסרה מהספרייה">${ICON.trash}</button>`}
     </div>`;
   info.querySelectorAll('.chip').forEach((c) => (c.onclick = () => select(c.dataset.id, true)));
+  $('[data-act=send]', info).onclick = (e) => sendVideo(v, e.currentTarget);
   $('[data-act=copy]', info).onclick = async () => {
     try { await navigator.clipboard.writeText(shareUrl(v)); toast('הקישור הועתק'); } catch { prompt('קישור', shareUrl(v)); }
   };

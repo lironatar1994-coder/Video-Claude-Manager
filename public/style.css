@@ -176,6 +176,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 .icon:hover { color: var(--text); border-color: #34343b; }
 .icon.wa:hover { color: #25d366; border-color: #25d366; }
+.icon.busy { pointer-events: none; color: #25d366; animation: busy 1s ease-in-out infinite; }
+@keyframes busy { 50% { opacity: .35; } }
 .icon.danger:hover { color: var(--danger); border-color: var(--danger); }
 .icon svg { width: 17px; height: 17px; }
 
