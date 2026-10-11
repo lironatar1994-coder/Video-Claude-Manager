@@ -1,0 +1,9 @@
+{
+  "name": "video-library",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "register": "node register.mjs"
+  }
+}

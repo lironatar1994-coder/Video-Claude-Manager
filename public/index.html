@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ספריית וידאו</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Cpath d='M12 9l12 7-12 7z' fill='%23ffb547'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside class="side">
+    <div class="brand"><span class="brand-mark"></span>ספריית וידאו</div>
+    <nav id="projects" class="projects"></nav>
+    <button id="addBtn" class="add" title="הוספת וידאו">＋</button>
+  </aside>
+
+  <main id="main" class="main"></main>
+
+  <dialog id="addDlg" class="dlg">
+    <form method="dialog" id="addForm">
+      <input name="path" dir="ltr" placeholder="C:\path\to\video.mp4  או תיקייה" required autocomplete="off">
+      <input name="project" placeholder="פרויקט (לא חובה)" autocomplete="off">
+      <div class="dlg-row">
+        <button value="cancel" formnovalidate class="ghost">ביטול</button>
+        <button value="ok" class="primary">הוספה</button>
+      </div>
+      <p class="dlg-err" id="addErr"></p>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+  <script src="app.js" type="module"></script>
+</body>
+</html>

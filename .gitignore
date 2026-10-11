@@ -1,0 +1,6 @@
+# Video files, registry and thumbnails are machine-local (hundreds of MB)
+data/
+dist/
+node_modules/
+.claude/
+*.log
