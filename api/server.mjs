@@ -133,7 +133,10 @@ export function createHandler({ dataDir, wwwDir, teamKey }) {
 }
 
 // Run directly (production): PORT, VL_DATA, VL_WWW, VL_TEAM_KEY_FILE
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Under pm2, argv[1] is pm2's own wrapper; it exposes the real script as pm_exec_path.
+const self = fileURLToPath(import.meta.url);
+const entry = process.env.pm_exec_path || process.argv[1];
+if (entry && path.resolve(entry) === self) {
   const dataDir = process.env.VL_DATA || '/var/lib/video-library';
   const keyFile = process.env.VL_TEAM_KEY_FILE || path.join(dataDir, 'team.key');
   const handler = createHandler({
