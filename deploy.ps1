@@ -44,6 +44,8 @@ try {
 
     Invoke-Checked node @('scripts/build-static.mjs')
     Copy-Item 'dist/media.txt' 'dist/www/media.txt'
+    New-Item -ItemType Directory -Force 'dist/www/_api' | Out-Null
+    Copy-Item 'api/server.mjs' 'dist/www/_api/server.mjs'
     [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'dist/www/revision.txt'), "$revision`n")
     $archive = Join-Path $PSScriptRoot 'dist/release.tar.gz'
     Invoke-Checked tar.exe @('-czf', $archive, '-C', 'dist/www', '.')
@@ -73,5 +75,16 @@ try {
     $live = Invoke-RestMethod 'https://lawebs.co.il/videos/data.json' -Headers @{ 'Cache-Control' = 'no-cache' }
     $rev = (Get-Content 'dist/rev.txt' -Raw).Trim()
     if ([string]$live.rev -ne $rev) { throw "Live library mismatch (live $($live.rev), built $rev)" }
+    # The local app reads client feedback with the team key; fetch it once.
+    $keyFile = Join-Path $PSScriptRoot 'data/team.key'
+    if (-not (Test-Path $keyFile)) {
+        $key = (& ssh -o BatchMode=yes $SSHHost 'cat /var/lib/video-library/team.key' | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and $key -match '^[0-9a-f]{48}$') { [IO.File]::WriteAllText($keyFile, $key) }
+    }
+    try {
+        $health = Invoke-RestMethod 'https://lawebs.co.il/videos/api/health'
+        Write-Host "Review API: ok ($($health.events) events)"
+    } catch { Write-Warning 'Review API is not answering - client approvals/comments will not save.' }
+    [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'data/published.json'), (@{ rev = [int]$rev; revision = $revision; at = (Get-Date).ToString('o') } | ConvertTo-Json -Compress))
     Write-Host "Live: https://lawebs.co.il/videos/  ($($live.videos.Count) videos, $($revision.Substring(0, 7)))" -ForegroundColor Green
 } finally { Pop-Location }

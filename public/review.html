@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0b0b0d">
+<!--HEAD-->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Cpath d='M12 9l12 7-12 7z' fill='%23ffb547'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../review.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-text">
+    <h1 id="title"></h1>
+    <p id="sub" class="sub num"></p>
+  </div>
+  <span id="status" class="status" hidden></span>
+</header>
+
+<main class="layout">
+  <section class="watch">
+    <div class="player"><video id="video" controls playsinline preload="metadata"></video></div>
+    <div id="markers" class="markers" hidden></div>
+    <div id="variants" class="variants" role="group" aria-label="גרסה"></div>
+    <p id="olderNote" class="older-note" hidden>זו גרסה קודמת. <button type="button" id="backToLatest">לגרסה האחרונה</button></p>
+  </section>
+
+  <aside class="panel">
+    <div id="decide" class="decide">
+      <button type="button" class="btn approve" id="approveBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
+        <span>אישור הגרסה</span>
+      </button>
+      <button type="button" class="btn changes" id="changesBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>
+        <span>צריך תיקונים</span>
+      </button>
+    </div>
+
+    <form id="composer" class="composer" hidden>
+      <p id="composerTitle" class="composer-title"></p>
+      <button type="button" id="atChip" class="at-chip num" aria-pressed="true"></button>
+      <textarea id="text" rows="3" maxlength="2000"></textarea>
+      <input id="name" maxlength="60" autocomplete="name" placeholder="השם שלך">
+      <div class="composer-row">
+        <button type="submit" class="btn primary" id="sendBtn"><span>שליחה</span></button>
+        <button type="button" class="btn ghost" id="cancelBtn">ביטול</button>
+      </div>
+      <p id="formErr" class="form-err" role="alert"></p>
+    </form>
+
+    <section class="thread-wrap" aria-labelledby="threadTitle">
+      <h2 id="threadTitle">הערות <span id="count" class="count num"></span></h2>
+      <ol id="thread" class="thread"></ol>
+      <p id="empty" class="empty">אין הערות עדיין. אפשר לעצור את הסרטון בכל רגע ולכתוב מה לשנות.</p>
+    </section>
+
+    <section id="older" class="older" hidden>
+      <h2>גרסאות קודמות</h2>
+      <div id="olderList" class="older-list"></div>
+    </section>
+  </aside>
+</main>
+
+<div id="toast" class="toast" role="status"></div>
+<script src="../../review.js" type="module"></script>
+</body>
+</html>

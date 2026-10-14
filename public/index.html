@@ -13,8 +13,18 @@
 <body>
   <aside class="side">
     <div class="brand"><span class="brand-mark"></span>ספריית וידאו</div>
+    <label class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="search" type="search" placeholder="חיפוש" aria-label="חיפוש" autocomplete="off">
+      <kbd>/</kbd>
+    </label>
     <nav id="projects" class="projects"></nav>
-    <button id="addBtn" class="add" title="הוספת וידאו">＋</button>
+    <div class="side-foot">
+      <button id="publish" class="publish" disabled></button>
+      <button id="addBtn" class="add" title="הוספת וידאו" aria-label="הוספת וידאו">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </div>
   </aside>
 
   <main id="main" class="main"></main>

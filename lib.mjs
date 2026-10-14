@@ -194,8 +194,14 @@ export async function register(srcPath, opts = {}) {
     hash,
   };
 
-  // Re-read right before writing so a concurrent register isn't lost.
+  // Re-read right before writing so a concurrent register isn't lost — and so the folder
+  // watcher and a CLI call racing on the same render don't both add it.
   const fresh = load();
+  const raced = fresh.videos.find((v) => v.hash === hash && slug(v.project) === slug(project));
+  if (raced) {
+    for (const f of [file, thumbPath]) await fsp.rm(f, { force: true });
+    return { video: raced, duplicate: true };
+  }
   fresh.videos.push(video);
   save(fresh);
   return { video, duplicate: false };
@@ -208,6 +214,7 @@ export async function remove(id) {
   db.videos = db.videos.filter((x) => x.id !== id);
   save(db);
   for (const rel of [v.file, v.thumb]) if (rel) await fsp.rm(path.join(DATA, rel), { force: true });
+  await fsp.rm(lightPath(v), { force: true });
   return true;
 }
 
@@ -227,6 +234,57 @@ export function renameProject(from, to) {
   for (const v of db.videos) if (v.project === from) { v.project = to.trim(); n++; }
   if (n) save(db);
   return n;
+}
+
+// ---- client review links: one unguessable token per project ----
+const PROJECTS = path.join(DATA, 'projects.json');
+
+export function loadProjects() {
+  try { return JSON.parse(fs.readFileSync(PROJECTS, 'utf8')); } catch { return {}; }
+}
+
+export function projectToken(name) {
+  const all = loadProjects();
+  const k = slug(name);
+  if (!all[k]) {
+    all[k] = { token: crypto.randomBytes(9).toString('base64url'), createdAt: new Date().toISOString() };
+    ensureDirs();
+    const tmp = PROJECTS + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(all, null, 2));
+    fs.renameSync(tmp, PROJECTS);
+  }
+  return all[k].token;
+}
+
+// ---- light copies: 720p, small enough to send from a phone without waiting ----
+export const LIGHT = path.join(DATA, 'light');
+const LIGHT_MIN_BYTES = 12e6;
+
+export function lightPath(v) {
+  return path.join(LIGHT, `${v.id}.mp4`);
+}
+
+export function needsLight(v) {
+  return ['.mp4', '.mov', '.m4v'].includes(path.extname(v.file).toLowerCase()) && v.size >= LIGHT_MIN_BYTES;
+}
+
+export async function ensureLight(v) {
+  if (!needsLight(v)) return null;
+  const out = lightPath(v);
+  if (fs.existsSync(out)) return out;
+  if (fs.existsSync(out + '.skip')) return null;
+  fs.mkdirSync(LIGHT, { recursive: true });
+  const tmp = `${out}.${process.pid}.tmp.mp4`; // the server and a build may encode at the same time
+  // Short side capped at 720 so portrait and landscape both land around 720p.
+  const scale = "scale='if(gt(iw,ih),-2,min(720,iw))':'if(gt(iw,ih),min(720,ih),-2)'";
+  await run('ffmpeg', ['-y', '-v', 'error', '-i', path.join(DATA, v.file), '-vf', scale,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '27', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', tmp]);
+  if (!fs.existsSync(tmp)) return null;
+  // Keep it only if it is actually meaningfully smaller.
+  if (fs.statSync(tmp).size > v.size * 0.8) { fs.rmSync(tmp); fs.writeFileSync(out + '.skip', ''); return null; }
+  fs.renameSync(tmp, out);
+  return out;
 }
 
 export async function scanDir(dir, opts = {}) {

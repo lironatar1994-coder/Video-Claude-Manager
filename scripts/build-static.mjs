@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { ROOT, DATA, load } from '../lib.mjs';
+import { ROOT, DATA, load, ensureLight, projectToken } from '../lib.mjs';
 
 const DIST = path.join(ROOT, 'dist');
 const WWW = path.join(DIST, 'www');
@@ -15,7 +15,7 @@ fs.rmSync(WWW, { recursive: true, force: true });
 fs.mkdirSync(path.join(WWW, 'thumbs'), { recursive: true });
 fs.mkdirSync(WEB, { recursive: true });
 
-for (const f of ['app.js', 'style.css']) fs.copyFileSync(path.join(ROOT, 'public', f), path.join(WWW, f));
+for (const f of ['app.js', 'style.css', 'review.js', 'review.css']) fs.copyFileSync(path.join(ROOT, 'public', f), path.join(WWW, f));
 const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8')
   .replace('<html lang="he" dir="rtl">', '<html lang="he" dir="rtl" data-mode="static">')
   .replace('<meta charset="utf-8">', '<meta charset="utf-8">\n  <meta name="robots" content="noindex, nofollow">');
@@ -24,7 +24,8 @@ fs.writeFileSync(path.join(WWW, 'index.html'), html);
 
 const db = load();
 const media = [];
-const videos = db.videos.map((v) => {
+const videos = [];
+for (const v of db.videos) {
   const src = path.join(DATA, v.file);
   const ext = path.extname(src).toLowerCase();
   const name = `${v.id}${ext}`;
@@ -43,13 +44,24 @@ const videos = db.videos.map((v) => {
     fs.copyFileSync(path.join(DATA, v.thumb), path.join(WWW, 'thumbs', `${v.id}.jpg`));
     poster = `thumbs/${v.id}.jpg`;
   }
-  return {
+  // 720p share copy, linked next to the stream copy so deploy uploads it like any other media file.
+  let light = null;
+  const lp = await ensureLight(v);
+  if (lp) {
+    const lname = `${v.id}.light.mp4`;
+    const lout = path.join(WEB, lname);
+    if (!fs.existsSync(lout)) { try { fs.linkSync(lp, lout); } catch { fs.copyFileSync(lp, lout); } }
+    media.push(lname);
+    light = `media/${lname}`;
+  }
+  videos.push({
     id: v.id, project: v.project, title: v.title, version: v.version, variant: v.variant, note: v.note,
     width: v.width, height: v.height, duration: v.duration, size: fs.statSync(out).size,
     createdAt: v.createdAt, addedAt: v.addedAt,
-    src: `media/${name}`, poster, name: path.basename(v.source),
-  };
-});
+    src: `media/${name}`, light, poster, name: path.basename(v.source),
+    review: projectToken(v.project),
+  });
+}
 
 // ---- share pages: /videos/v/<id>/ with Open Graph tags so WhatsApp shows a preview ----
 const PUBLIC = 'https://lawebs.co.il/videos/';
@@ -114,6 +126,39 @@ ${v.width ? `<meta property="og:video:width" content="${v.width}">\n<meta proper
 `;
   fs.mkdirSync(path.join(WWW, 'v', v.id), { recursive: true });
   fs.writeFileSync(path.join(WWW, 'v', v.id, 'index.html'), page);
+}
+
+// ---- client review pages: /videos/p/<token>/ — one project only, with approve / comment ----
+// The page gets its own data.json holding just that project, so a client never sees the others.
+const reviewTpl = fs.readFileSync(path.join(ROOT, 'public', 'review.html'), 'utf8');
+const byProject = new Map();
+for (const v of videos) {
+  if (!byProject.has(v.review)) byProject.set(v.review, []);
+  byProject.get(v.review).push(v);
+}
+for (const [token, list] of byProject) {
+  list.sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1));
+  const latest = list[0];
+  const project = latest.project;
+  const versions = new Set(list.map((v) => v.title + v.version)).size;
+  const og = fs.existsSync(path.join(WWW, 'og', `${latest.id}.jpg`)) ? `${PUBLIC}og/${latest.id}.jpg` : null;
+  const tags = [
+    `<title>${esc(project)} · צפייה ואישור</title>`,
+    `<meta property="og:type" content="website">`,
+    `<meta property="og:title" content="${esc(project)} · צפייה ואישור">`,
+    `<meta property="og:description" content="${esc(`גרסה v${latest.version} · ${when(latest.createdAt)}`)}">`,
+    `<meta property="og:url" content="${PUBLIC}p/${token}/">`,
+    og && `<meta property="og:image" content="${og}">\n<meta property="og:image:width" content="1200">\n<meta property="og:image:height" content="630">\n<meta name="twitter:card" content="summary_large_image">`,
+  ].filter(Boolean).join('\n');
+  const dir = path.join(WWW, 'p', token);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'index.html'), reviewTpl.replace('<!--HEAD-->', tags));
+  // Paths in the page are relative to /videos/p/<token>/.
+  const rel = (s) => (s ? `../../${s}` : null);
+  fs.writeFileSync(path.join(dir, 'data.json'), JSON.stringify({
+    project, token, versions,
+    videos: list.map(({ name, review, note, addedAt, ...v }) => ({ ...v, src: rel(v.src), light: rel(v.light), poster: rel(v.poster) })),
+  }));
 }
 
 fs.writeFileSync(path.join(WWW, 'data.json'), JSON.stringify({ rev: db.rev, videos }));

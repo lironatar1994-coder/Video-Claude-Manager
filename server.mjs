@@ -3,7 +3,11 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
-import { ROOT, DATA, load, register, remove, update, renameProject, scanDir, slug } from './lib.mjs';
+import { ROOT, DATA, load, register, remove, update, renameProject, scanDir, slug, projectToken, lightPath } from './lib.mjs';
+import {
+  queueLight, lightPending, syncWatchers, watchedRoots, recentIngest,
+  publish, schedulePublish, publishState, publishedRev, syncFeedback, loadFeedback, feedbackState,
+} from './services.mjs';
 
 const PORT = Number(process.env.PORT) || 5757;
 const PUBLIC = path.join(ROOT, 'public');
@@ -61,26 +65,47 @@ const server = http.createServer(async (req, res) => {
   try {
     if (p === '/api/videos' && req.method === 'GET') {
       const db = load();
+      const tokens = {};
       const videos = db.videos.map(({ hash, ...v }) => ({
         ...v,
         src: `media/${v.id}`,
+        light: fs.existsSync(lightPath(v)) ? `light/${v.id}.mp4` : null,
         poster: v.thumb ? `thumb/${v.id}.jpg` : null,
         name: path.basename(v.source),
+        review: (tokens[v.project] ??= projectToken(v.project)),
       }));
       return json(res, 200, { rev: db.rev, videos });
     }
+    // Everything the UI polls for, in one cheap call.
+    if (p === '/api/state') {
+      const fbk = loadFeedback();
+      return json(res, 200, {
+        rev: load().rev,
+        publishedRev: publishedRev(),
+        publish: publishState(),
+        feedback: { last: fbk.last, ...feedbackState() },
+        light: lightPending(),
+        watching: watchedRoots().length,
+      });
+    }
     if (p === '/api/rev') return json(res, 200, { rev: load().rev });
+    if (p === '/api/feedback') return json(res, 200, loadFeedback());
+    if (p === '/api/publish' && req.method === 'POST') return json(res, publish() ? 202 : 409, publishState());
+    if (p === '/api/watch') return json(res, 200, { roots: watchedRoots(), recent: recentIngest() });
 
     if (p === '/api/videos' && req.method === 'POST') {
       const b = await readBody(req);
       if (!b.path) return json(res, 400, { error: 'path is required' });
       const out = await register(b.path, b);
+      if (!out.duplicate) { queueLight(out.video); syncWatchers(onIngest); }
       return json(res, out.duplicate ? 200 : 201, out);
     }
     if (p === '/api/scan' && req.method === 'POST') {
       const b = await readBody(req);
       if (!b.dir) return json(res, 400, { error: 'dir is required' });
       const out = await scanDir(b.dir, b);
+      out.forEach((r) => queueLight(r.video));
+      syncWatchers(onIngest);
       return json(res, 200, { added: out.filter((r) => !r.duplicate).length, results: out });
     }
     if (seg[0] === 'api' && seg[1] === 'videos' && seg[2]) {
@@ -97,9 +122,11 @@ const server = http.createServer(async (req, res) => {
         // sends it as a video. A readable file name is linked in data/share/<id>/.
         const v = load().videos.find((x) => x.id === id);
         if (!v) return json(res, 404, { error: 'not found' });
-        const ext = path.extname(v.file);
+        // WhatsApp re-encodes to ~720p anyway, so the light copy uploads faster for the same result.
+        const light = lightPath(v);
+        const ext = fs.existsSync(light) ? '.mp4' : path.extname(v.file);
         const web = path.join(DATA, 'web', v.id + ext);
-        const src = fs.existsSync(web) ? web : path.join(DATA, v.file);
+        const src = fs.existsSync(light) ? light : fs.existsSync(web) ? web : path.join(DATA, v.file);
         const dir = path.join(DATA, 'share', v.id);
         const dest = path.join(dir, `${slug(v.project)}-v${v.version}${v.variant ? '-' + slug(v.variant) : ''}${ext}`);
         if (!fs.existsSync(dest)) {
@@ -129,6 +156,11 @@ const server = http.createServer(async (req, res) => {
       if (!f) { res.writeHead(404); return res.end(); }
       return sendFile(req, res, f, 'max-age=31536000, immutable');
     }
+    if (seg[0] === 'light' && seg[1]) {
+      const f = inside(DATA, path.join('light', path.basename(seg[1])));
+      if (!f) { res.writeHead(404); return res.end(); }
+      return sendFile(req, res, f, 'max-age=31536000, immutable');
+    }
     if (seg[0] === 'thumb' && seg[1]) {
       const f = inside(DATA, path.join('thumbs', path.basename(seg[1])));
       if (!f) { res.writeHead(404); return res.end(); }
@@ -143,4 +175,18 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => console.log(`Video library → http://localhost:${PORT}`));
+// A render picked up by the folder watcher goes live on its own a little later.
+function onIngest() { schedulePublish(); }
+
+server.listen(PORT, '127.0.0.1', () => {
+  console.log(`Video library → http://localhost:${PORT}`);
+  // Videos registered from the CLI (another process) are picked up here too.
+  const sweep = () => { syncWatchers(onIngest); for (const v of load().videos) queueLight(v); };
+  // VL_PASSIVE: a second instance (tests) must not watch folders or auto-publish.
+  if (!process.env.VL_PASSIVE) {
+    sweep();
+    setInterval(sweep, 60e3);
+  }
+  syncFeedback();
+  setInterval(syncFeedback, 45e3);
+});
