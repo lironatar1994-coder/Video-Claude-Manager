@@ -7,6 +7,7 @@ import { ROOT, DATA, load, register, remove, update, renameProject, scanDir, slu
 import {
   queueLight, lightPending, syncWatchers, watchedRoots, recentIngest,
   publish, schedulePublish, publishState, publishedRev, syncFeedback, loadFeedback, feedbackState,
+  loadLocal, setResolved, markSent,
 } from './services.mjs';
 
 const PORT = Number(process.env.PORT) || 5757;
@@ -92,6 +93,21 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/feedback') return json(res, 200, loadFeedback());
     if (p === '/api/publish' && req.method === 'POST') return json(res, publish() ? 202 : 409, publishState());
     if (p === '/api/watch') return json(res, 200, { roots: watchedRoots(), recent: recentIngest() });
+    if (p === '/api/local') return json(res, 200, loadLocal());
+    if (p === '/api/resolve' && req.method === 'POST') { const b = await readBody(req); return json(res, 200, setResolved(String(b.id), !!b.done)); }
+    if (p === '/api/sent' && req.method === 'POST') { const b = await readBody(req); return b.project ? json(res, 200, markSent(String(b.project), b.how)) : json(res, 400, { error: 'project' }); }
+    // drag & drop from the browser: the file streams into data/inbox, then is registered like any other
+    if (p === '/api/upload' && req.method === 'POST') {
+      const name = path.basename(url.searchParams.get('name') || 'video.mp4').replace(/[^\p{L}\p{N}._ -]+/gu, '_');
+      if (!/\.(mp4|webm|mov|m4v|mkv)$/i.test(name)) return json(res, 400, { error: 'not a video file' });
+      const dir = path.join(DATA, 'inbox'); fs.mkdirSync(dir, { recursive: true });
+      const dest = path.join(dir, name);
+      await new Promise((resolve, reject) => { const ws = fs.createWriteStream(dest); req.pipe(ws); ws.on('finish', resolve); ws.on('error', reject); req.on('error', reject); });
+      const project = url.searchParams.get('project') || undefined;
+      const out = await register(dest, { project });
+      if (!out.duplicate) queueLight(out.video);
+      return json(res, out.duplicate ? 200 : 201, out);
+    }
 
     if (p === '/api/videos' && req.method === 'POST') {
       const b = await readBody(req);

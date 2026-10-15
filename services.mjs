@@ -179,3 +179,28 @@ export async function syncFeedback() {
   }
 }
 export function feedbackState() { return { ...fb }; }
+
+// ---------------------------------------------------------------- local team state
+// Things only the team cares about: which client comments are handled, and when a
+// project's review link was sent (copied or opened in WhatsApp).
+const LOCAL = path.join(DATA, 'local.json');
+export function loadLocal() {
+  try { return { resolved: {}, sent: {}, ...JSON.parse(fs.readFileSync(LOCAL, 'utf8')) }; } catch { return { resolved: {}, sent: {} }; }
+}
+function saveLocal(s) {
+  const tmp = LOCAL + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(s, null, 1));
+  fs.renameSync(tmp, LOCAL);
+  return s;
+}
+export function setResolved(id, done) {
+  const s = loadLocal();
+  if (done) s.resolved[id] = new Date().toISOString(); else delete s.resolved[id];
+  return saveLocal(s);
+}
+export function markSent(project, how = 'link') {
+  const s = loadLocal();
+  (s.sent[project] ||= []).push({ at: new Date().toISOString(), how });
+  s.sent[project] = s.sent[project].slice(-20);
+  return saveLocal(s);
+}

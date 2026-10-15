@@ -49,7 +49,7 @@ if (STATIC) { $('#addBtn').remove(); $('#publish').remove(); }
 
 const S = {
   rev: -1, videos: [], project: null, a: null, b: null, compare: false, fresh: new Set(),
-  query: '', events: [], fbLast: null, state: null,
+  query: '', events: [], fbLast: null, state: null, local: { resolved: {}, sent: {} }, filter: null,
 };
 
 // ---------- data shaping ----------
@@ -95,31 +95,39 @@ function versionGroups(p) {
   return { groups, multiTitle: titles.size > 1 };
 }
 
-// ---------- client feedback (local app only) ----------
 function fbFor(v) {
   const list = S.events.filter((e) => e.video === v.id);
   const decisions = list.filter((e) => e.kind === 'approve' || e.kind === 'changes');
   const last = decisions.at(-1);
   const views = list.filter((e) => e.kind === 'view');
+  // a change request stays open until it is marked handled here (or a later approval replaces it)
+  const openList = last?.kind === 'approve' ? [] : list.filter((e) => e.kind === 'changes' && !S.local.resolved[e.id]);
   return {
     list: list.filter((e) => e.kind !== 'view'),
     approved: last?.kind === 'approve' ? last : null,
-    changes: list.filter((e) => e.kind === 'changes').length,
-    open: last?.kind === 'changes',
+    changes: openList.length,
+    open: openList.length > 0,
+    openList,
     views: views.length,
     lastView: views.at(-1)?.ts || null,
   };
 }
-// One word for where a project stands, from its newest version.
+// One word for where a project stands, from its newest version (and whether its link went out).
 function projectStatus(p) {
   if (STATIC) return null;
   const { groups } = versionGroups(p);
   const vids = groups.filter((g) => g.latest).flatMap((g) => g.videos);
   const fbs = vids.map(fbFor);
-  if (fbs.some((f) => f.approved)) return { cls: 'ok', text: 'אושר' };
-  if (fbs.some((f) => f.open)) return { cls: 'changes', text: 'בתיקונים' };
-  if (fbs.some((f) => f.views)) return { cls: 'seen', text: 'נצפה' };
-  return null;
+  if (fbs.some((f) => f.approved)) return { cls: 'ok', text: 'אושר', key: 'ok' };
+  const open = fbs.reduce((n, f) => n + f.changes, 0);
+  if (open) return { cls: 'changes', text: open > 1 ? `${open} תיקונים` : 'בתיקונים', key: 'changes' };
+  const lastView = fbs.map((f) => f.lastView).filter(Boolean).sort().at(-1);
+  if (lastView) return { cls: 'seen', text: 'נצפה', key: 'seen', at: lastView };
+  const sent = (S.local.sent[p.name] || []).at(-1);
+  if (sent && sent.at > p.latest.addedAt) return { cls: 'sent', text: 'נשלח · לא נצפה', key: 'sent', at: sent.at };
+  // only fresh versions nag; an old project that was never sent through here is just quiet
+  if (Date.now() - new Date(p.latest.addedAt) > 14 * 864e5) return null;
+  return { cls: 'new', text: 'טרם נשלח', key: 'new' };
 }
 
 // ---------- links ----------
@@ -205,7 +213,7 @@ function renderSide() {
         ${p.latest.poster ? `<img src="${p.latest.poster}" alt="" loading="lazy">` : '<span class="ph"></span>'}
         <span class="proj-text">
           <span class="proj-name">${esc(p.name)}${unseen || newFb ? '<span class="dot-new" title="חדש"></span>' : ''}</span>
-          <span class="proj-when">${st ? `<span class="st ${st.cls}">${st.text}</span> · ` : ''}${fmt.rel(p.latest.createdAt)}</span>
+          <span class="proj-when">${st && st.key !== 'new' ? `<span class="st ${st.cls}">${st.text}</span> · ` : ''}${fmt.rel(p.latest.createdAt)}</span>
         </span>
         <span class="proj-count num" title="${versions} גרסאות">${versions}</span>
       </button>`);
@@ -239,36 +247,147 @@ $('#publish')?.addEventListener('click', async () => {
   renderPublish();
 });
 
-// ---------- home ----------
+// ---------- home: everything at a glance, and what needs doing ----------
+const latestVideos = (p) => versionGroups(p).groups.filter((g) => g.latest).flatMap((g) => g.videos);
+function attention() {
+  const items = [];
+  for (const p of projects()) {
+    for (const v of latestVideos(p)) for (const e of fbFor(v).openList) items.push({ type: 'change', p, v, e, at: e.ts });
+    const st = projectStatus(p);
+    if (st?.key === 'new') items.push({ type: 'send', p, at: p.latest.addedAt });
+    if (st?.key === 'sent' && Date.now() - new Date(st.at) > 2 * 864e5) items.push({ type: 'nudge', p, at: st.at });
+  }
+  const rank = { change: 0, send: 1, nudge: 2 };
+  return items.sort((a, b) => rank[a.type] - rank[b.type] || (b.at > a.at ? 1 : -1));
+}
+function activity() {
+  const out = [];
+  for (const v of S.videos) out.push({ at: v.addedAt, kind: 'new', v });
+  const views = new Map();   // views of the same video on the same day count as one line
+  for (const e of S.events) {
+    const v = byId(e.video); if (!v) continue;
+    if (e.kind === 'view') {
+      const k = e.video + e.ts.slice(0, 10), cur = views.get(k);
+      if (cur) { cur.n++; if (e.ts > cur.at) cur.at = e.ts; } else { const it = { at: e.ts, kind: 'view', v, n: 1 }; views.set(k, it); out.push(it); }
+    } else out.push({ at: e.ts, kind: e.kind, v, e });
+  }
+  for (const [name, list] of Object.entries(S.local.sent)) for (const x of list) out.push({ at: x.at, kind: 'sent', name });
+  return out.sort((a, b) => (b.at > a.at ? 1 : -1)).slice(0, 18);
+}
+const vlabel = (v) => `${esc(v.project)} · <span class="ltr">v${v.version}</span>${v.variant ? ' · ' + esc(v.variant) : ''}`;
+const STATS = [['changes', 'תיקונים פתוחים', 'pen'], ['new', 'מוכנים לשליחה', 'upload'], ['sent', 'נשלחו, לא נצפו', 'eye'], ['ok', 'אושרו', 'check']];
 function renderHome() {
   const main = $('#main');
-  const list = projects({ filtered: true });
+  let list = projects({ filtered: true });
+  const counts = { changes: 0, new: 0, sent: 0, ok: 0 };
+  const stOf = new Map(projects().map((p) => [p.key, projectStatus(p)]));
+  for (const st of stOf.values()) if (st && st.key in counts) counts[st.key]++;
+  counts.changes = projects().reduce((n, p) => n + latestVideos(p).reduce((m, v) => m + fbFor(v).changes, 0), 0);
+  if (S.filter) list = list.filter((p) => stOf.get(p.key)?.key === S.filter);
+  const week = S.videos.filter((v) => Date.now() - new Date(v.addedAt) < 7 * 864e5).length;
+  const fname = (STATS.find((x) => x[0] === S.filter) || [])[1];
   main.replaceChildren(h(`<section class="home">
-    <header class="home-head">
-      <h1>כל הפרויקטים</h1>
-      <p class="head-meta num">${projects().length} פרויקטים · ${S.videos.length} סרטונים</p>
-    </header>
-    <div class="tiles"></div>
+    <div class="home-main">
+      <header class="home-head">
+        <div><h1>כל הפרויקטים</h1><p class="head-meta num">${projects().length} פרויקטים · ${S.videos.length} סרטונים · ${week} חדשים השבוע</p></div>
+        <button class="pill" id="kbtn" title="חיפוש ופעולות (Ctrl+K)">${ICON.search}<span>חיפוש ופעולות</span><kbd>Ctrl K</kbd></button>
+      </header>
+      ${STATIC ? '' : `<div class="stats">${STATS.map(([k, label, ic]) => `<button class="stat st-${k} ${S.filter === k ? 'on' : ''}" data-f="${k}" aria-pressed="${S.filter === k}"><span class="si">${ICON[ic]}</span><b class="num">${counts[k]}</b><span>${label}</span></button>`).join('')}</div>`}
+      ${S.filter ? `<p class="filtering">מוצגים רק: ${fname} <button id="clearF">הצגת הכל</button></p>` : ''}
+      <div class="tiles"></div>
+    </div>
+    ${STATIC ? '' : `<aside class="home-side">
+      <section class="panel" id="attn"><h2>דורש טיפול <span class="count num"></span></h2><ol class="alist"></ol></section>
+      <section class="panel"><h2>פעילות אחרונה</h2><ol class="feed"></ol></section>
+    </aside>`}
   </section>`));
+  $('#kbtn').onclick = openPalette;
+  main.querySelectorAll('.stat').forEach((b) => (b.onclick = () => { S.filter = S.filter === b.dataset.f ? null : b.dataset.f; renderHome(); }));
+  $('#clearF')?.addEventListener('click', () => { S.filter = null; renderHome(); });
+
   const tiles = $('.tiles', main);
-  if (!list.length) tiles.replaceWith(h(`<p class="none">אין תוצאות ל־"${esc(S.query)}"</p>`));
+  if (!list.length) tiles.append(h(`<p class="none">${S.query ? `אין תוצאות ל־"${esc(S.query)}"` : 'אין פרויקטים במצב הזה'}</p>`));
   tiles.append(...list.map((p) => {
-    const { groups } = versionGroups(p);
-    const top = groups[0];
-    const st = projectStatus(p);
-    const el = h(`<button class="tile" data-key="${esc(p.key)}">
+    const top = versionGroups(p).groups[0], st = stOf.get(p.key);
+    const el = h(`<div class="tile" role="button" tabindex="0" data-key="${esc(p.key)}">
       <span class="tile-art">
         ${p.latest.poster ? `<img src="${p.latest.poster}" alt="" loading="lazy">` : ''}
-        ${st ? `<span class="st ${st.cls}">${st.text}</span>` : ''}
+        ${st && !STATIC ? `<span class="st ${st.cls}">${st.text}</span>` : ''}
+        ${p.latest.review && !STATIC ? `<span class="qa">
+          <a class="qb wa" href="${wa(`${p.name} · צפייה ואישור\n${reviewUrl(p.latest)}`)}" target="_blank" rel="noopener" title="שליחת לינק ללקוח בוואטסאפ" data-sent="wa">${ICON.whatsapp}</a>
+          <button class="qb" title="העתקת לינק ללקוח" data-act="copy">${ICON.link}</button>
+        </span>` : ''}
       </span>
       <span class="tile-text">
         <b>${esc(p.name)}</b>
         <span class="num"><span class="ltr">v${top.version}</span> · ${fmt.rel(top.when)}</span>
       </span>
-    </button>`);
-    el.onclick = () => openProject(p.key);
+    </div>`);
+    el.onclick = (e) => { if (!e.target.closest('.qa')) openProject(p.key); };
+    el.onkeydown = (e) => { if (e.key === 'Enter') openProject(p.key); };
+    el.querySelector('[data-sent="wa"]')?.addEventListener('click', () => sent(p.name, 'wa'));
+    el.querySelector('[data-act="copy"]')?.addEventListener('click', () => { copy(reviewUrl(p.latest), 'לינק הלקוח הועתק'); sent(p.name, 'link'); });
     return el;
   }));
+  if (STATIC) return;
+
+  // needs attention: open change requests first, then versions nobody has sent, then links nobody opened
+  const att = attention();
+  $('#attn .count').textContent = att.length || '';
+  $('#attn .alist').innerHTML = att.length ? att.slice(0, 12).map((a, i) => {
+    if (a.type === 'change') return `<li class="ai change">
+        <img src="${a.v.poster || ''}" alt="">
+        <div class="ab"><div class="ah">${vlabel(a.v)}</div>
+          <p><b>${esc(a.e.name || 'לקוח')}:</b> ${esc(a.e.text)}</p>
+          <div class="arow">${a.e.at != null ? `<button class="chipb num" data-go="${i}">▶ ${fmt.at(a.e.at)}</button>` : `<button class="chipb" data-go="${i}">פתיחה</button>`}
+          <button class="done" data-done="${a.e.id}" title="סימון כטופל">${ICON.check}טופל</button><span class="dim-t">${fmt.rel(a.e.ts)}</span></div></div></li>`;
+    if (a.type === 'send') return `<li class="ai send"><img src="${a.p.latest.poster || ''}" alt="">
+        <div class="ab"><div class="ah">${esc(a.p.name)}</div><p>גרסה חדשה מוכנה ועוד לא נשלחה ללקוח</p>
+        <div class="arow"><a class="chipb wa" href="${wa(`${a.p.name} · צפייה ואישור\n${reviewUrl(a.p.latest)}`)}" target="_blank" rel="noopener" data-wa="${esc(a.p.name)}">${ICON.whatsapp}שליחה</a><button class="chipb" data-copy="${esc(a.p.name)}">${ICON.link}העתקה</button><button class="done" data-manual="${esc(a.p.name)}" title="נשלח בדרך אחרת">${ICON.check}כבר נשלח</button><span class="dim-t">${fmt.rel(a.at)}</span></div></div></li>`;
+    return `<li class="ai nudge"><img src="${a.p.latest.poster || ''}" alt="">
+        <div class="ab"><div class="ah">${esc(a.p.name)}</div><p>הלינק נשלח ${fmt.rel(a.at)} ועוד לא נצפה</p>
+        <div class="arow"><a class="chipb wa" href="${wa(`תזכורת · ${a.p.name}\n${reviewUrl(a.p.latest)}`)}" target="_blank" rel="noopener" data-wa="${esc(a.p.name)}">${ICON.whatsapp}תזכורת</a></div></div></li>`;
+  }).join('') : '<li class="none">הכל מטופל ✓</li>';
+  main.querySelectorAll('[data-go]').forEach((b) => (b.onclick = () => { const a = att[+b.dataset.go]; openAt(a.v, a.e.at); }));
+  main.querySelectorAll('[data-done]').forEach((b) => (b.onclick = () => resolve(b.dataset.done, true)));
+  main.querySelectorAll('[data-wa]').forEach((b) => b.addEventListener('click', () => sent(b.dataset.wa, 'wa')));
+  main.querySelectorAll('[data-manual]').forEach((b) => (b.onclick = () => sent(b.dataset.manual, 'manual')));
+  main.querySelectorAll('[data-copy]').forEach((b) => (b.onclick = () => { const pr = projects().find((x) => x.name === b.dataset.copy); copy(reviewUrl(pr.latest), 'לינק הלקוח הועתק'); sent(pr.name, 'link'); }));
+
+  const ACT = {
+    new: (a) => `<b>סרטון חדש</b> · ${vlabel(a.v)}`,
+    view: (a) => `${vlabel(a.v)} <b>נצפה</b>${a.n > 1 ? ` ${a.n} פעמים` : ''}`,
+    changes: (a) => `<b>${esc(a.e.name || 'לקוח')}</b> ביקש/ה תיקון · ${vlabel(a.v)}`,
+    approve: (a) => `<b>${esc(a.e.name || 'לקוח')}</b> אישר/ה · ${vlabel(a.v)}`,
+    comment: (a) => `<b>${esc(a.e.name || 'לקוח')}</b> הגיב/ה · ${vlabel(a.v)}`,
+    sent: (a) => `לינק נשלח ללקוח · ${esc(a.name)}`,
+  };
+  const DOTC = { new: 'acc', view: 'seen', changes: 'changes', approve: 'ok', comment: 'acc', sent: 'sent' };
+  const feed = activity();
+  $('.feed', main).innerHTML = feed.map((a, i) => `<li data-f="${i}" tabindex="0"><i class="fd ${DOTC[a.kind]}"></i><span>${ACT[a.kind](a)}</span><time class="dim-t">${fmt.rel(a.at)}</time></li>`).join('');
+  $('.feed', main).querySelectorAll('li').forEach((li) => (li.onclick = () => {
+    const a = feed[+li.dataset.f];
+    if (a.v) openAt(a.v, a.e?.at ?? null); else { const pr = projects().find((x) => x.name === a.name); if (pr) openProject(pr.key); }
+  }));
+}
+// open a video at a moment (a client's timestamp)
+function openAt(v, at) {
+  openProject(slug(v.project), v.id);
+  if (at == null) return;
+  requestAnimationFrame(() => {
+    const vid = $(`.players .slot[data-id="${v.id}"] video`); if (!vid) return;
+    const set = () => { vid.currentTime = at; vid.pause(); };
+    vid.readyState >= 1 ? set() : vid.addEventListener('loadedmetadata', set, { once: true });
+  });
+}
+async function resolve(id, done) {
+  try { S.local = await api('api/resolve', 'POST', { id, done }); } catch { return toast('לא נשמר'); }
+  toast(done ? 'סומן כטופל' : 'הוחזר לפתוח');
+  renderSide(); if (S.project) renderMain(); else renderHome();
+}
+async function sent(project, how) {
+  try { S.local = await api('api/sent', 'POST', { project, how }); } catch { return; }
+  renderSide(); if (!S.project) renderHome();
 }
 
 // ---------- project ----------
@@ -305,7 +424,8 @@ function renderMain() {
       ${p.videos.length > 1 ? `<button class="pill ${S.compare ? 'on' : ''}" id="cmp" aria-pressed="${S.compare}" title="השוואה (C)">${ICON.compare}<span>השוואה</span></button>` : ''}
     </div>`;
   $('#cmp', head)?.addEventListener('click', toggleCompare);
-  $('#clientCopy', head)?.addEventListener('click', () => copy(reviewUrl(p.latest), 'לינק הלקוח הועתק'));
+  $('#clientCopy', head)?.addEventListener('click', () => { copy(reviewUrl(p.latest), 'לינק הלקוח הועתק'); sent(p.name, 'link'); });
+  $('#clientWa', head)?.addEventListener('click', () => sent(p.name, 'wa'));
   const h1 = $('h1', head);
   if (!STATIC) h1.ondblclick = () => editProjectName(h1, p);
 
@@ -367,8 +487,9 @@ function clientBlock(v) {
   else if (f.views) head = `<span class="st seen">${ICON.eye}נצפה${f.views > 1 ? ` ${f.views} פעמים` : ''}</span><span class="dim-t">${fmt.rel(f.lastView)}</span>`;
   else head = `<span class="st none">הלקוח עוד לא צפה</span>`;
   const KIND = { approve: 'אישור', changes: 'תיקון', comment: 'הערה' };
-  const items = f.list.slice().reverse().map((e) => `<li class="fb-item ${e.kind}">
-      <div class="fb-head"><span class="kind">${KIND[e.kind]}</span><b>${esc(e.name || 'לקוח')}</b><span class="dim-t">${fmt.rel(e.ts)}</span></div>
+  const items = f.list.slice().reverse().map((e) => `<li class="fb-item ${e.kind} ${S.local.resolved[e.id] ? 'resolved' : ''}">
+      <div class="fb-head"><span class="kind">${KIND[e.kind]}</span><b>${esc(e.name || 'לקוח')}</b><span class="dim-t">${fmt.rel(e.ts)}</span>
+        ${e.kind === 'changes' ? `<button class="done ${S.local.resolved[e.id] ? 'on' : ''}" data-done="${e.id}" title="${S.local.resolved[e.id] ? 'החזרה לפתוח' : 'סימון כטופל'}">${ICON.check}${S.local.resolved[e.id] ? 'טופל' : 'טיפלתי'}</button>` : ''}</div>
       ${e.at != null ? `<button class="at num" data-at="${e.at}">${fmt.at(e.at)}</button>` : ''}
       ${e.text ? `<p>${esc(e.text)}</p>` : ''}
     </li>`).join('');
@@ -425,6 +546,7 @@ function renderStage() {
       ${STATIC ? '' : `<button class="icon danger" data-act="delete" title="הסרה מהספרייה" aria-label="הסרה מהספרייה">${ICON.trash}</button>`}
     </div>`;
   info.querySelectorAll('.chip').forEach((c) => (c.onclick = () => select(c.dataset.id, true)));
+  info.querySelectorAll('[data-done]').forEach((b) => (b.onclick = () => resolve(b.dataset.done, !S.local.resolved[b.dataset.done])));
   info.querySelectorAll('.at').forEach((b) => (b.onclick = () => {
     const vid = $(`.players .slot[data-id="${v.id}"] video`);
     if (vid) { vid.currentTime = +b.dataset.at; vid.pause(); }
@@ -586,8 +708,10 @@ search.addEventListener('keydown', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'ל')) { e.preventDefault(); openPalette(); return; }
   const typing = e.target.closest?.('input, textarea, [contenteditable="true"], [contenteditable="plaintext-only"]');
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === '?') { e.preventDefault(); toggleHelp(); return; }
   if (e.key === '/') { e.preventDefault(); search.focus(); search.select(); }
   else if (e.key === 'Escape' && S.project) openHome();
   else if (e.key === 'ArrowLeft' && S.project) { e.preventDefault(); step(1); }   // RTL: left = onward
@@ -686,8 +810,108 @@ window.addEventListener('hashchange', () => {
   if (p !== S.project || (id && id !== S.a)) openProject(p, id);
 });
 
-refresh().then(pollState);
+(STATIC ? Promise.resolve() : api('api/local').then((l) => (S.local = l)).catch(() => {})).then(() => refresh()).then(pollState);
 if (STATIC) setInterval(refresh, 60000);
 else setInterval(pollState, 2500);
 setInterval(() => { renderSide(); renderPublish(); }, 30000);
 setInterval(() => { if (S.state?.publish.scheduledAt) renderPublish(); }, 1000);
+
+// ---------- command palette (Ctrl+K): jump anywhere, do anything ----------
+function paletteItems() {
+  const items = [];
+  if (!STATIC) items.push({ k: 'פרסום עכשיו', sub: 'העלאת השינויים לאתר', ic: ICON.upload, run: () => $('#publish')?.click() });
+  items.push({ k: 'כל הפרויקטים', sub: 'מסך הבית', ic: ICON.grid, run: openHome });
+  for (const p of projects()) {
+    items.push({ k: p.name, sub: `פרויקט · ${new Set(p.videos.map((v) => v.title + v.version)).size} גרסאות`, ic: ICON.folder, img: p.latest.poster, run: () => openProject(p.key) });
+    if (p.latest.review && !STATIC) {
+      items.push({ k: `לינק ללקוח · ${p.name}`, sub: 'העתקה', ic: ICON.link, run: () => { copy(reviewUrl(p.latest), 'לינק הלקוח הועתק'); sent(p.name, 'link'); } });
+      items.push({ k: `וואטסאפ ללקוח · ${p.name}`, sub: 'פתיחה בוואטסאפ', ic: ICON.whatsapp, run: () => { window.open(wa(`${p.name} · צפייה ואישור\n${reviewUrl(p.latest)}`), '_blank', 'noopener'); sent(p.name, 'wa'); } });
+    }
+  }
+  for (const v of S.videos) items.push({ k: `${v.project} v${v.version}${v.variant ? ' ' + v.variant : ''}`, sub: `${v.title} · ${fmt.date(v.createdAt)}`, ic: ICON.film, img: v.poster, run: () => openProject(slug(v.project), v.id) });
+  if (!STATIC) items.push({ k: 'הוספת וידאו', sub: 'מנתיב בדיסק', ic: ICON.upload, run: () => $('#addBtn')?.click() });
+  items.push({ k: 'קיצורי מקלדת', sub: '?', ic: ICON.search, run: toggleHelp });
+  return items;
+}
+function openPalette() {
+  if ($('#pal')) return;
+  const all = paletteItems();
+  const el = h(`<div id="pal" class="pal" role="dialog" aria-label="חיפוש ופעולות"><div class="pal-box">
+    <label class="pal-in">${ICON.search}<input placeholder="פרויקט, גרסה או פעולה…" autocomplete="off" spellcheck="false"></label>
+    <ol class="pal-list" role="listbox"></ol></div></div>`);
+  document.body.append(el);
+  const input = $('input', el), listEl = $('.pal-list', el);
+  let sel = 0, shown = [];
+  const score = (it, q) => {
+    if (!q) return 1;
+    const hay = (it.k + ' ' + it.sub).toLowerCase(), parts = q.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!parts.every((w) => hay.includes(w))) return 0;
+    return (it.k.toLowerCase().startsWith(parts[0]) ? 3 : 1) + (it.k.toLowerCase().includes(q.toLowerCase()) ? 2 : 0);
+  };
+  const draw = () => {
+    const q = input.value.trim();
+    shown = all.map((it) => [it, score(it, q)]).filter(([, sc]) => sc > 0).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([it]) => it);
+    sel = Math.min(sel, Math.max(0, shown.length - 1));
+    listEl.innerHTML = shown.length ? shown.map((it, i) => `<li role="option" aria-selected="${i === sel}" class="${i === sel ? 'on' : ''}" data-i="${i}">
+      ${it.img ? `<img src="${it.img}" alt="">` : `<span class="pi">${it.ic}</span>`}<span class="pt"><b>${esc(it.k)}</b><small>${esc(it.sub)}</small></span></li>`).join('') : '<li class="none">אין תוצאות</li>';
+    listEl.querySelectorAll('li[data-i]').forEach((li) => { li.onmousemove = () => { if (sel !== +li.dataset.i) { sel = +li.dataset.i; draw(); } }; li.onclick = () => go(+li.dataset.i); });
+    listEl.querySelector('.on')?.scrollIntoView({ block: 'nearest' });
+  };
+  const close = () => el.remove();
+  const go = (i) => { const it = shown[i]; close(); it?.run(); };
+  input.oninput = () => { sel = 0; draw(); };
+  input.onkeydown = (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = (sel + 1) % Math.max(1, shown.length); draw(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = (sel - 1 + shown.length) % Math.max(1, shown.length); draw(); }
+    else if (e.key === 'Enter') { e.preventDefault(); go(sel); }
+    else if (e.key === 'Escape') close();
+  };
+  el.onclick = (e) => { if (e.target === el) close(); };
+  draw(); input.focus();
+}
+
+// ---------- keyboard help (?) ----------
+function toggleHelp() {
+  if ($('#help')) return $('#help').remove();
+  const keys = [['Ctrl K', 'חיפוש ופעולות'], ['/', 'חיפוש בסרגל'], ['← →', 'גרסה הבאה / קודמת'], ['C', 'השוואה'], ['Esc', 'כל הפרויקטים'], ['?', 'החלון הזה']];
+  const el = h(`<div id="help" class="pal"><div class="pal-box help"><h2>קיצורי מקלדת</h2><dl>${keys.map(([k, d]) => `<dt><kbd>${k}</kbd></dt><dd>${d}</dd>`).join('')}</dl><p class="dim-t">גרירת קובץ וידאו לחלון מוסיפה אותו לפרויקט הפתוח.</p></div></div>`);
+  el.onclick = () => el.remove();
+  document.body.append(el);
+}
+
+// ---------- drag a video file onto the window: it is uploaded and registered ----------
+if (!STATIC) {
+  let depth = 0;
+  const overlay = h('<div id="drop" class="drop"><div><b></b><span>הקובץ יועתק לספרייה וירשם כגרסה</span></div></div>');
+  document.body.append(overlay);
+  const isFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+  addEventListener('dragenter', (e) => {
+    if (!isFiles(e)) return; e.preventDefault(); depth++;
+    const p = projects().find((x) => x.key === S.project);
+    $('b', overlay).textContent = p ? `הוספה לפרויקט ${p.name}` : 'הוספה לספרייה';
+    overlay.classList.add('on');
+  });
+  addEventListener('dragleave', (e) => { if (!isFiles(e)) return; if (--depth <= 0) { depth = 0; overlay.classList.remove('on'); } });
+  addEventListener('dragover', (e) => { if (isFiles(e)) e.preventDefault(); });
+  addEventListener('drop', async (e) => {
+    if (!isFiles(e)) return; e.preventDefault(); depth = 0; overlay.classList.remove('on');
+    const files = [...e.dataTransfer.files].filter((f) => /\.(mp4|webm|mov|m4v|mkv)$/i.test(f.name));
+    if (!files.length) return toast('רק קבצי וידאו (mp4, webm, mov)');
+    const p = projects().find((x) => x.key === S.project);
+    for (const f of files) {
+      try {
+        const r = await new Promise((resolve, reject) => {
+          const x = new XMLHttpRequest();
+          x.open('POST', `api/upload?name=${encodeURIComponent(f.name)}${p ? `&project=${encodeURIComponent(p.name)}` : ''}`);
+          x.upload.onprogress = (ev) => { if (ev.lengthComputable) toast(`מעלה ${f.name} · ${Math.round((ev.loaded / ev.total) * 100)}%`); };
+          x.onload = () => { try { const j = JSON.parse(x.responseText); x.status < 300 ? resolve(j) : reject(new Error(j.error)); } catch (err) { reject(err); } };
+          x.onerror = () => reject(new Error('network'));
+          x.send(f);
+        });
+        toast(r.duplicate ? 'הסרטון כבר בספרייה' : `נוסף · ${r.video.project} v${r.video.version}`);
+        await refresh(true);
+        openProject(slug(r.video.project), r.video.id);
+      } catch (err) { toast(`ההעלאה נכשלה: ${err.message}`); }
+    }
+  });
+}
